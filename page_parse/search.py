@@ -192,7 +192,10 @@ def get_weibo_info_1(each, html):
         else:
             create_time = str(datetime.datetime.now().year) +'-'+ create_time.replace('月','-').replace('日','')
         wb_data.create_time = create_time
-        wb_data.device = a_tag.contents[3].text
+        if len(a_tag.contents) >= 4:
+            wb_data.device = a_tag.contents[3].text
+        else:
+            wb_data.device = ''
     except Exception as why:
         parser.error(why)
         wb_data.weibo_url = ''

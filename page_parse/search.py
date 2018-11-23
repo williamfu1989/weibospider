@@ -1,14 +1,14 @@
 import re
 import urllib.parse
-from datetime import datetime
+import datetime
 
 from bs4 import BeautifulSoup
 
-from logger import parser
+from logger import (parser, crawler)
 from page_get import status
 from utils import url_filter
 from db.models import WeiboData
-from decorators import parse_decorator
+from decorators import parse_decorator 
 from tasks.workers import app
 from config import (
     get_crawling_mode, get_images_allow, get_images_path)
@@ -124,6 +124,15 @@ def get_weibo_info(each, html):
         except (AttributeError, ValueError):
             wb_data.praise_num = 0
 
+    a_tag = each.find(attrs={'class': 'from'}).find_all('a')
+    try:
+        a_tag = each.find(attrs={'class': 'from'}).find_all('a')
+        extracted_url = urllib.parse.unquote(re.findall(r"full_url=(.+?)&amp;", a_tag[0])[0])
+        wb_data.weibo_video = url_filter(extracted_url)
+    except Exception as why:
+        parser.error('Failed to get weibo cont, the error is {}, the page source is {}'.format(why, html))
+        wb_data.weibo_video = ''
+
     try:
         wb_data.weibo_cont = each.find(attrs={'class': 'comment_txt'}).text.strip()
     except Exception as why:
@@ -136,6 +145,70 @@ def get_weibo_info(each, html):
         is_all_cont = 1
     return wb_data, is_all_cont
 
+@parse_decorator(None)
+def get_weibo_info_1(each, html):
+    wb_data = WeiboData()
+
+    try:
+        wb_data.weibo_id = each['mid']
+    except Exception as why:
+        parser.error('Failed to get weibo cont, the error is {}, the page source is {}'.format(why, html))
+        return None
+
+    try:
+        feed_action = each.find(attrs={'class': 'card-act'})
+    except Exception as why:
+        parser.error('Failed to get feed_action, the error is {},the page source is {}'.format(why, each))
+    else:
+        feed_infos = feed_action.find_all('li')
+        try:
+            wb_data.repost_num = get_feed_info(feed_infos, '转发')
+        except (AttributeError, ValueError):
+            wb_data.repost_num = 0
+        try:
+            wb_data.comment_num = get_feed_info(feed_infos, '评论')
+        except (AttributeError, ValueError):
+            wb_data.comment_num = 0
+        try:
+            wb_data.praise_num = int(feed_action.find(attrs={'action-type': 'feed_list_like'}).find('em').text)
+        except (AttributeError, ValueError):
+            wb_data.praise_num = 0
+        try:
+            m = re.search('uid=(\\d+)',str(feed_action.find(attrs={'action-type': 'feed_list_forward'})['action-data']))
+            wb_data.uid = m.group(1)
+        except Exception as why:
+            parser.error('Failed to get weibo cont, the error is {}, the page source is {}'.format(why, html))
+            return None
+    try:
+        a_tag = each.find(attrs={'class': 'from'})
+        wb_data.weibo_url = "https:" + a_tag.a['href']
+        create_time = a_tag.a.text.replace("\n","").strip()
+        if "秒前" in create_time:
+            create_time = (datetime.datetime.now() - datetime.timedelta(seconds=int(create_time.replace("秒前","")))).strftime("%Y-%m-%d %H:%M")
+        elif "分钟前" in create_time:
+            create_time = (datetime.datetime.now() - datetime.timedelta(minutes=int(create_time.replace("分钟前","")))).strftime("%Y-%m-%d %H:%M")
+        elif "今天" in create_time:
+            create_time = datetime.datetime.now().strftime("%Y-%m-%d") + " " + create_time.replace("今天","")
+        else:
+            create_time = str(datetime.datetime.now().year) +'-'+ create_time.replace('月','-').replace('日','')
+        wb_data.create_time = create_time
+        wb_data.device = a_tag.contents[3].text
+    except Exception as why:
+        parser.error(why)
+        wb_data.weibo_url = ''
+
+    try:
+        wb_data.weibo_cont = each.find(
+            attrs={'node-type': 'feed_list_content'}).text.strip()
+    except Exception as why:
+        parser.error('Failed to get weibo cont, the error is {}, the page source is {}'.format(why, html))
+        return None
+
+    if '展开全文' in str(each):
+        is_all_cont = 0
+    else:
+        is_all_cont = 1
+    return wb_data, is_all_cont
 
 @parse_decorator([])
 def get_search_info(html):
@@ -144,7 +217,9 @@ def get_search_info(html):
     :return: search results
     """
     # 搜索结果可能有两种方式，一种是直接返回的，一种是编码过后的
-    content = _search_page_parse(html) if '举报' not in html else html
+    # content = _search_page_parse(html) if '举报' not in html else html
+    content = html
+
     if content == '':
         return list()
     # todo 这里用bs会导致某些信息不能被解析（参考../tests/fail.html），可参考使用xpath，考虑到成本，暂时不实现
@@ -152,7 +227,7 @@ def get_search_info(html):
     feed_list = soup.find_all(attrs={'action-type': 'feed_list_item'})
     search_list = []
     for each in feed_list:
-        r = get_weibo_info(each, html)
+        r = get_weibo_info_1(each, html)
         if r is not None:
             wb_data = r[0]
             if r[1] == 0 and CRAWLING_MODE == 'accurate':
@@ -160,7 +235,3 @@ def get_search_info(html):
                 wb_data.weibo_cont = weibo_cont if weibo_cont else wb_data.weibo_cont
             search_list.append(wb_data)
     return search_list
-
-
-
-
